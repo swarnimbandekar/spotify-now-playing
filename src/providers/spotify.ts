@@ -2,6 +2,11 @@ import axios from 'axios';
 import { saveUser } from '../storage';
 import { NowPlayingData, UserData } from '../types';
 
+const getServerSpotifyCreds = () => ({
+  clientId: process.env.SPOTIFY_CLIENT_ID || '',
+  clientSecret: process.env.SPOTIFY_SECRET_ID || '',
+});
+
 const normalizeSpotifyTrack = (
   item: any,
   isPlaying: boolean,
@@ -27,14 +32,24 @@ const extractFallback = (lastPlayed: UserData['lastPlayed']): NowPlayingData | n
   return null;
 };
 
-export const getSpotifyAuthUrl = (state: string, clientId: string, redirectUri: string) => {
+export const getSpotifyAuthUrl = (state: string, redirectUri: string, clientId?: string) => {
+  const resolvedClientId = clientId || getServerSpotifyCreds().clientId;
   const scope = 'user-read-currently-playing user-read-playback-state user-read-private user-read-recently-played';
-  return `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&scope=${encodeURIComponent(
-    scope
-  )}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
+  return `https://accounts.spotify.com/authorize?response_type=code&client_id=${encodeURIComponent(
+    resolvedClientId
+  )}&scope=${encodeURIComponent(scope)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
 };
 
-export const getSpotifyTokens = async (code: string, clientId: string, clientSecret: string, redirectUri: string) => {
+export const getSpotifyTokens = async (
+  code: string,
+  redirectUri: string,
+  clientId?: string,
+  clientSecret?: string
+) => {
+  const creds = getServerSpotifyCreds();
+  const resolvedClientId = clientId || creds.clientId;
+  const resolvedClientSecret = clientSecret || creds.clientSecret;
+
   const response = await axios.post(
     'https://accounts.spotify.com/api/token',
     new URLSearchParams({
@@ -44,7 +59,7 @@ export const getSpotifyTokens = async (code: string, clientId: string, clientSec
     }),
     {
       headers: {
-        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+        Authorization: `Basic ${Buffer.from(`${resolvedClientId}:${resolvedClientSecret}`).toString('base64')}`,
         'Content-Type': 'application/x-www-form-urlencoded',
       },
     }
@@ -62,7 +77,11 @@ export const getSpotifyProfile = async (accessToken: string) => {
 };
 
 export const refreshSpotifyToken = async (user: UserData): Promise<string> => {
-  if (!user.refreshToken || !user.clientId || !user.clientSecret) {
+  const creds = getServerSpotifyCreds();
+  const clientId = user.clientId || creds.clientId;
+  const clientSecret = user.clientSecret || creds.clientSecret;
+
+  if (!user.refreshToken || !clientId || !clientSecret) {
     throw new Error('Missing Spotify refresh credentials');
   }
 
@@ -74,7 +93,7 @@ export const refreshSpotifyToken = async (user: UserData): Promise<string> => {
     }),
     {
       headers: {
-        Authorization: `Basic ${Buffer.from(`${user.clientId}:${user.clientSecret}`).toString('base64')}`,
+        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
         'Content-Type': 'application/x-www-form-urlencoded',
       },
     }
@@ -96,7 +115,7 @@ export const getSpotifyNowPlaying = async (user: UserData): Promise<NowPlayingDa
   let accessToken = user.accessToken;
   if (!accessToken) return null;
 
-  if (user.expiresAt && Date.now() > user.expiresAt) {
+  if (user.expiresAt && Date.now() > user.expiresAt - 60_000) {
     accessToken = await refreshSpotifyToken(user);
     user.accessToken = accessToken;
   }

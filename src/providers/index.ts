@@ -3,15 +3,12 @@ import NodeCache from 'node-cache';
 import { getUser } from '../storage';
 import { NowPlayingData, ProviderId, UserData } from '../types';
 import { getSpotifyNowPlaying } from './spotify';
-import { getLastFmNowPlaying } from './lastfm';
-import { getListenBrainzNowPlaying } from './listenbrainz';
-import { getDeezerNowPlaying } from './deezer';
-import { getSubsonicNowPlaying } from './subsonic';
+import { getYouTubeNowPlaying } from './youtube';
 
 const cache = new NodeCache({ stdTTL: 30 }); // Cache for 30 seconds
 
 export const resolveProvider = (user: UserData): ProviderId => {
-  return user.provider || 'spotify';
+  return user.provider === 'youtube' ? 'youtube' : 'spotify';
 };
 
 export const invalidateCache = (uid: string) => {
@@ -32,17 +29,8 @@ export const getNowPlaying = async (uid: string): Promise<NowPlayingData | null>
     case 'spotify':
       data = await getSpotifyNowPlaying(user);
       break;
-    case 'lastfm':
-      data = await getLastFmNowPlaying(user);
-      break;
-    case 'listenbrainz':
-      data = await getListenBrainzNowPlaying(user);
-      break;
-    case 'deezer':
-      data = await getDeezerNowPlaying(user);
-      break;
-    case 'subsonic':
-      data = await getSubsonicNowPlaying(user);
+    case 'youtube':
+      data = await getYouTubeNowPlaying(user);
       break;
     default:
       data = null;
