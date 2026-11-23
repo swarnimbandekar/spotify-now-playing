@@ -1,6 +1,6 @@
 import * as admin from 'firebase-admin';
 import dotenv from 'dotenv';
-import { ProviderId, UserData } from './types';
+import { ProviderConnection, ProviderId, UserData } from './types';
 
 dotenv.config();
 
@@ -41,7 +41,74 @@ const db = admin.firestore();
 const USERS_COLLECTION = 'users';
 
 export const saveUser = async (uid: string, data: Omit<UserData, 'uid'>) => {
-  await db.collection(USERS_COLLECTION).doc(uid).set(data);
+  await db.collection(USERS_COLLECTION).doc(uid).set(data, { merge: true });
+};
+
+export const saveProviderConnection = async (
+  uid: string,
+  provider: ProviderId,
+  connection: ProviderConnection,
+  displayName?: string
+) => {
+  const payload: Record<string, any> = {
+    providers: {
+      [provider]: connection,
+    },
+  };
+  if (displayName) {
+    payload.displayName = displayName;
+  }
+  if (provider === 'spotify') {
+    payload.spotifyId = connection.providerUserId;
+  }
+  await db.collection(USERS_COLLECTION).doc(uid).set(payload, { merge: true });
+};
+
+export const updateProviderConnection = async (
+  uid: string,
+  provider: ProviderId,
+  partial: Partial<ProviderConnection>
+) => {
+  const updates: Record<string, any> = {};
+  for (const [key, value] of Object.entries(partial)) {
+    if (value !== undefined) {
+      updates[`providers.${provider}.${key}`] = value;
+    }
+  }
+  if (Object.keys(updates).length === 0) return;
+  await db.collection(USERS_COLLECTION).doc(uid).set(
+    {
+      providers: {
+        [provider]: partial,
+      },
+    },
+    { merge: true }
+  );
+};
+
+export const disconnectProvider = async (uid: string, provider: ProviderId) => {
+  const docRef = db.collection(USERS_COLLECTION).doc(uid);
+  const updates: Record<string, any> = {
+    [`providers.${provider}`]: admin.firestore.FieldValue.delete(),
+  };
+
+  // Also clear legacy top-level fields if they belonged to this provider
+  const user = await getUser(uid);
+  if (user && (user.provider === provider || (!user.provider && provider === 'spotify'))) {
+    updates.provider = admin.firestore.FieldValue.delete();
+    updates.providerUserId = admin.firestore.FieldValue.delete();
+    updates.accessToken = admin.firestore.FieldValue.delete();
+    updates.refreshToken = admin.firestore.FieldValue.delete();
+    updates.expiresAt = admin.firestore.FieldValue.delete();
+    updates.clientId = admin.firestore.FieldValue.delete();
+    updates.clientSecret = admin.firestore.FieldValue.delete();
+    updates.lastPlayed = admin.firestore.FieldValue.delete();
+    if (provider === 'spotify') {
+      updates.spotifyId = admin.firestore.FieldValue.delete();
+    }
+  }
+
+  await docRef.update(updates);
 };
 
 export const getUser = async (uid: string): Promise<UserData | null> => {
@@ -64,20 +131,33 @@ export const getUserBySpotifyId = async (spotifyId: string): Promise<UserData | 
 };
 
 export const getUserByProviderId = async (provider: ProviderId, providerUserId: string): Promise<UserData | null> => {
-  const querySnapshot = await db
+  // Check new nested providers.<provider>.providerUserId first
+  const nestedSnap = await db
+    .collection(USERS_COLLECTION)
+    .where(`providers.${provider}.providerUserId`, '==', providerUserId)
+    .limit(1)
+    .get();
+
+  if (!nestedSnap.empty) {
+    const doc = nestedSnap.docs[0];
+    const data = doc.data() as Omit<UserData, 'uid'>;
+    return { uid: doc.id, ...data };
+  }
+
+  // Fallback for legacy single-provider docs
+  const legacySnap = await db
     .collection(USERS_COLLECTION)
     .where('provider', '==', provider)
     .where('providerUserId', '==', providerUserId)
     .limit(1)
     .get();
 
-  if (!querySnapshot.empty) {
-    const doc = querySnapshot.docs[0];
+  if (!legacySnap.empty) {
+    const doc = legacySnap.docs[0];
     const data = doc.data() as Omit<UserData, 'uid'>;
     return { uid: doc.id, ...data };
   }
 
-  // Backward compatibility for existing Spotify users stored without `provider`
   if (provider === 'spotify') {
     return getUserBySpotifyId(providerUserId);
   }

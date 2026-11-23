@@ -10,12 +10,29 @@ export interface NowPlayingData {
   isFallback: boolean;
 }
 
+export interface ProviderConnection {
+  providerUserId: string;
+  displayName: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  clientId?: string;
+  clientSecret?: string;
+  lastPlayed?: NowPlayingData;
+  lastActiveAt?: number;
+}
+
 export interface UserData {
   uid: string;
+  displayName: string;
+  providers?: {
+    spotify?: ProviderConnection;
+    youtube?: ProviderConnection;
+  };
+  // Legacy single-provider fields (preserved for backward compatibility)
   provider?: ProviderId;
   providerUserId?: string;
   spotifyId?: string;
-  displayName: string;
   accessToken?: string;
   refreshToken?: string;
   expiresAt?: number;

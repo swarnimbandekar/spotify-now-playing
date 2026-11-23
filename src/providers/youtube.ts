@@ -1,6 +1,7 @@
 import axios from 'axios';
-import { saveUser } from '../storage';
-import { NowPlayingData, UserData } from '../types';
+import { updateProviderConnection } from '../storage';
+import { NowPlayingData, ProviderConnection } from '../types';
+import { ProviderFetchResult } from './spotify';
 
 const getServerYouTubeCreds = () => ({
   clientId: process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '',
@@ -93,12 +94,12 @@ export const getYouTubeProfile = async (accessToken: string) => {
   };
 };
 
-export const refreshYouTubeToken = async (user: UserData): Promise<string> => {
+export const refreshYouTubeToken = async (uid: string, conn: ProviderConnection): Promise<string> => {
   const creds = getServerYouTubeCreds();
-  const clientId = user.clientId || creds.clientId;
-  const clientSecret = user.clientSecret || creds.clientSecret;
+  const clientId = conn.clientId || creds.clientId;
+  const clientSecret = conn.clientSecret || creds.clientSecret;
 
-  if (!user.refreshToken || !clientId || !clientSecret) {
+  if (!conn.refreshToken || !clientId || !clientSecret) {
     throw new Error('Missing YouTube Music refresh credentials');
   }
 
@@ -107,7 +108,7 @@ export const refreshYouTubeToken = async (user: UserData): Promise<string> => {
     new URLSearchParams({
       client_id: clientId,
       client_secret: clientSecret,
-      refresh_token: user.refreshToken,
+      refresh_token: conn.refreshToken,
       grant_type: 'refresh_token',
     }),
     {
@@ -118,12 +119,11 @@ export const refreshYouTubeToken = async (user: UserData): Promise<string> => {
   );
 
   const { access_token, expires_in, refresh_token } = response.data;
-  const { uid, ...rest } = user;
-  await saveUser(uid, {
-    ...rest,
+  const expiresAt = Date.now() + expires_in * 1000;
+  await updateProviderConnection(uid, 'youtube', {
     accessToken: access_token,
-    refreshToken: refresh_token || user.refreshToken,
-    expiresAt: Date.now() + expires_in * 1000,
+    refreshToken: refresh_token || conn.refreshToken,
+    expiresAt,
   });
 
   return access_token;
@@ -204,7 +204,6 @@ const fetchInnerTubeHistory = async (accessToken: string): Promise<NowPlayingDat
 };
 
 const fetchLikedMusicFallback = async (accessToken: string): Promise<NowPlayingData | null> => {
-  // Try YT Music "Liked Music" playlist (LM) first
   try {
     const lmRes = await axios.get('https://www.googleapis.com/youtube/v3/playlistItems', {
       params: { part: 'snippet', playlistId: 'LM', maxResults: 1 },
@@ -247,13 +246,24 @@ const fetchLikedMusicFallback = async (accessToken: string): Promise<NowPlayingD
   };
 };
 
-export const getYouTubeNowPlaying = async (user: UserData): Promise<NowPlayingData | null> => {
-  let accessToken = user.accessToken;
-  if (!accessToken) return null;
+export const getYouTubeNowPlaying = async (
+  uid: string,
+  conn: ProviderConnection
+): Promise<ProviderFetchResult> => {
+  let accessToken = conn.accessToken;
+  let lastActiveAt = conn.lastActiveAt || 0;
+  if (!accessToken) return { data: null, lastActiveAt };
 
-  if (user.expiresAt && Date.now() > user.expiresAt - 60_000) {
-    accessToken = await refreshYouTubeToken(user);
-    user.accessToken = accessToken;
+  if (conn.expiresAt && Date.now() > conn.expiresAt - 60_000) {
+    try {
+      accessToken = await refreshYouTubeToken(uid, conn);
+    } catch (err) {
+      console.error('Error refreshing YouTube Music token:', err);
+      const fb = conn.lastPlayed
+        ? { ...conn.lastPlayed, provider: 'youtube' as const, isPlaying: false, isFallback: true }
+        : null;
+      return { data: fb, lastActiveAt };
+    }
   }
 
   try {
@@ -270,22 +280,41 @@ export const getYouTubeNowPlaying = async (user: UserData): Promise<NowPlayingDa
     }
 
     if (data) {
-      const { uid, ...rest } = user;
-      await saveUser(uid, { ...rest, lastPlayed: data }).catch((err) =>
-        console.error('Error saving YouTube Music lastPlayed:', err)
-      );
-      return data;
+      const prev = conn.lastPlayed;
+      const trackChanged =
+        !prev || prev.trackName !== data.trackName || prev.artistName !== data.artistName;
+
+      if (trackChanged) {
+        lastActiveAt = Date.now();
+      }
+
+      // If a brand-new track appeared in YT Music history within the last 4 minutes, treat it as actively playing
+      const isRecentlyChanged = lastActiveAt > 0 && Date.now() - lastActiveAt < 4 * 60 * 1000;
+      const resolvedData: NowPlayingData = {
+        ...data,
+        isPlaying: isRecentlyChanged,
+        isFallback: !isRecentlyChanged,
+      };
+
+      if (trackChanged) {
+        await updateProviderConnection(uid, 'youtube', {
+          lastPlayed: data,
+          lastActiveAt,
+        }).catch((err) => console.error('Error saving YouTube Music lastPlayed:', err));
+      }
+
+      return { data: resolvedData, lastActiveAt };
     }
 
-    if (user.lastPlayed && 'trackName' in user.lastPlayed) {
-      return { ...user.lastPlayed, provider: 'youtube', isPlaying: false, isFallback: true };
-    }
-    return null;
+    const fb = conn.lastPlayed
+      ? { ...conn.lastPlayed, provider: 'youtube' as const, isPlaying: false, isFallback: true }
+      : null;
+    return { data: fb, lastActiveAt };
   } catch (error) {
     console.error('Error fetching YouTube Music track:', error);
-    if (user.lastPlayed && 'trackName' in user.lastPlayed) {
-      return { ...user.lastPlayed, provider: 'youtube', isPlaying: false, isFallback: true };
-    }
-    return null;
+    const fb = conn.lastPlayed
+      ? { ...conn.lastPlayed, provider: 'youtube' as const, isPlaying: false, isFallback: true }
+      : null;
+    return { data: fb, lastActiveAt };
   }
 };

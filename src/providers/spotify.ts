@@ -1,13 +1,13 @@
 import axios from 'axios';
-import { saveUser } from '../storage';
-import { NowPlayingData, UserData } from '../types';
+import { updateProviderConnection } from '../storage';
+import { NowPlayingData, ProviderConnection } from '../types';
 
 const getServerSpotifyCreds = () => ({
   clientId: process.env.SPOTIFY_CLIENT_ID || '',
   clientSecret: process.env.SPOTIFY_SECRET_ID || '',
 });
 
-const normalizeSpotifyTrack = (
+export const normalizeSpotifyTrack = (
   item: any,
   isPlaying: boolean,
   isFallback: boolean
@@ -20,17 +20,6 @@ const normalizeSpotifyTrack = (
   isPlaying,
   isFallback,
 });
-
-const extractFallback = (lastPlayed: UserData['lastPlayed']): NowPlayingData | null => {
-  if (!lastPlayed) return null;
-  if ('trackName' in lastPlayed) {
-    return { ...lastPlayed, provider: 'spotify', isPlaying: false, isFallback: true };
-  }
-  if ('item' in lastPlayed && lastPlayed.item) {
-    return normalizeSpotifyTrack(lastPlayed.item, false, true);
-  }
-  return null;
-};
 
 export const getSpotifyAuthUrl = (state: string, redirectUri: string, clientId?: string) => {
   const resolvedClientId = clientId || getServerSpotifyCreds().clientId;
@@ -76,12 +65,12 @@ export const getSpotifyProfile = async (accessToken: string) => {
   return response.data;
 };
 
-export const refreshSpotifyToken = async (user: UserData): Promise<string> => {
+export const refreshSpotifyToken = async (uid: string, conn: ProviderConnection): Promise<string> => {
   const creds = getServerSpotifyCreds();
-  const clientId = user.clientId || creds.clientId;
-  const clientSecret = user.clientSecret || creds.clientSecret;
+  const clientId = conn.clientId || creds.clientId;
+  const clientSecret = conn.clientSecret || creds.clientSecret;
 
-  if (!user.refreshToken || !clientId || !clientSecret) {
+  if (!conn.refreshToken || !clientId || !clientSecret) {
     throw new Error('Missing Spotify refresh credentials');
   }
 
@@ -89,7 +78,7 @@ export const refreshSpotifyToken = async (user: UserData): Promise<string> => {
     'https://accounts.spotify.com/api/token',
     new URLSearchParams({
       grant_type: 'refresh_token',
-      refresh_token: user.refreshToken,
+      refresh_token: conn.refreshToken,
     }),
     {
       headers: {
@@ -100,63 +89,91 @@ export const refreshSpotifyToken = async (user: UserData): Promise<string> => {
   );
 
   const { access_token, expires_in, refresh_token } = response.data;
-  const { uid, ...rest } = user;
-  await saveUser(uid, {
-    ...rest,
+  const expiresAt = Date.now() + expires_in * 1000;
+  await updateProviderConnection(uid, 'spotify', {
     accessToken: access_token,
-    refreshToken: refresh_token || user.refreshToken,
-    expiresAt: Date.now() + expires_in * 1000,
+    refreshToken: refresh_token || conn.refreshToken,
+    expiresAt,
   });
 
   return access_token;
 };
 
-export const getSpotifyNowPlaying = async (user: UserData): Promise<NowPlayingData | null> => {
-  let accessToken = user.accessToken;
-  if (!accessToken) return null;
+export interface ProviderFetchResult {
+  data: NowPlayingData | null;
+  lastActiveAt: number;
+}
 
-  if (user.expiresAt && Date.now() > user.expiresAt - 60_000) {
-    accessToken = await refreshSpotifyToken(user);
-    user.accessToken = accessToken;
+export const getSpotifyNowPlaying = async (
+  uid: string,
+  conn: ProviderConnection
+): Promise<ProviderFetchResult> => {
+  let accessToken = conn.accessToken;
+  let lastActiveAt = conn.lastActiveAt || 0;
+  if (!accessToken) return { data: null, lastActiveAt };
+
+  if (conn.expiresAt && Date.now() > conn.expiresAt - 60_000) {
+    try {
+      accessToken = await refreshSpotifyToken(uid, conn);
+    } catch (err) {
+      console.error('Error refreshing Spotify token:', err);
+      const fb = conn.lastPlayed
+        ? { ...conn.lastPlayed, provider: 'spotify' as const, isPlaying: false, isFallback: true }
+        : null;
+      return { data: fb, lastActiveAt };
+    }
   }
 
   try {
     const response = await axios.get('https://api.spotify.com/v1/me/player/currently-playing', {
       headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 6000,
     });
 
     if (response.status === 204 || response.status > 400 || !response.data || !response.data.item) {
-      const dbFallback = extractFallback(user.lastPlayed);
-      if (dbFallback) return dbFallback;
+      if (conn.lastPlayed) {
+        return {
+          data: { ...conn.lastPlayed, provider: 'spotify', isPlaying: false, isFallback: true },
+          lastActiveAt,
+        };
+      }
 
       try {
         const recentResponse = await axios.get('https://api.spotify.com/v1/me/player/recently-played?limit=1', {
           headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 6000,
         });
-        const recentTrack = recentResponse.data?.items?.[0]?.track;
-        if (recentTrack) {
-          const fallbackData = normalizeSpotifyTrack(recentTrack, false, true);
-          const { uid, ...rest } = user;
-          await saveUser(uid, { ...rest, lastPlayed: fallbackData }).catch((err) =>
+        const recentItem = recentResponse.data?.items?.[0];
+        if (recentItem?.track) {
+          const fallbackData = normalizeSpotifyTrack(recentItem.track, false, true);
+          const playedAtMs = recentItem.played_at ? Date.parse(recentItem.played_at) : Date.now();
+          lastActiveAt = Number.isNaN(playedAtMs) ? lastActiveAt : Math.max(lastActiveAt, playedAtMs);
+          await updateProviderConnection(uid, 'spotify', { lastPlayed: fallbackData, lastActiveAt }).catch((err) =>
             console.error('Error saving Spotify recently played fallback:', err)
           );
-          return fallbackData;
+          return { data: fallbackData, lastActiveAt };
         }
       } catch (e) {
         console.error('Error fetching Spotify recently played as fallback:', e);
       }
 
-      return null;
+      return { data: null, lastActiveAt };
     }
 
-    const data = normalizeSpotifyTrack(response.data.item, Boolean(response.data.is_playing), false);
-    const { uid, ...rest } = user;
-    await saveUser(uid, { ...rest, lastPlayed: data }).catch((err) =>
+    const isPlaying = Boolean(response.data.is_playing);
+    const data = normalizeSpotifyTrack(response.data.item, isPlaying, false);
+    if (isPlaying) {
+      lastActiveAt = Date.now();
+    }
+    await updateProviderConnection(uid, 'spotify', { lastPlayed: data, lastActiveAt }).catch((err) =>
       console.error('Error saving Spotify lastPlayed:', err)
     );
-    return data;
+    return { data, lastActiveAt };
   } catch (error) {
     console.error('Error fetching Spotify now playing:', error);
-    return extractFallback(user.lastPlayed);
+    const fb = conn.lastPlayed
+      ? { ...conn.lastPlayed, provider: 'spotify' as const, isPlaying: false, isFallback: true }
+      : null;
+    return { data: fb, lastActiveAt };
   }
 };
