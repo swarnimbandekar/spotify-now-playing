@@ -22,12 +22,9 @@
 
 ## ✨ Features
 
-- **One-Click OAuth Support**:
-  - **Spotify**: Live currently playing & recently played tracks via Spotify OAuth.
-  - **YouTube Music**: Recently played & liked tracks via Google OAuth (popup/redirect flow).
-- **Real-time Updates**: Reflects what you are currently listening to (with automatic fallback to your last played track).
+- **Real-time Updates**: Reflects what you are currently listening to on Spotify (with automatic fallback to your last played track).
 - **Server-Side Caching**: Uses in-memory caching (30s TTL) to reduce API calls and protect rate limits.
-- **SVG Rendering**: Returns a crisp, lightweight SVG image that renders perfectly in GitHub Readmes, accented by each platform's brand color.
+- **SVG Rendering**: Returns a crisp, lightweight SVG image that renders perfectly in GitHub Readmes.
 - **Dynamic Styling**: Beautifully designed templates that look great in any theme.
 - **Easy Integration**: Simple Markdown or HTML snippets for embedding.
 - **Secure Auth**: Uses Spotify OAuth 2.0 with state verification to prevent CSRF.

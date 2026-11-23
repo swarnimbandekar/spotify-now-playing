@@ -1,4 +1,4 @@
-export type ProviderId = 'spotify' | 'youtube';
+export type ProviderId = 'spotify';
 
 export interface NowPlayingData {
   provider: ProviderId;
@@ -27,7 +27,6 @@ export interface UserData {
   displayName: string;
   providers?: {
     spotify?: ProviderConnection;
-    youtube?: ProviderConnection;
   };
   // Legacy single-provider fields (preserved for backward compatibility)
   provider?: ProviderId;
@@ -54,11 +53,5 @@ export const PROVIDERS: Record<ProviderId, ProviderMeta> = {
     name: 'Spotify',
     color: '#1DB954',
     description: 'Live currently playing & recently played tracks via Spotify OAuth.',
-  },
-  youtube: {
-    id: 'youtube',
-    name: 'YouTube Music',
-    color: '#FF0033',
-    description: 'Recently played & liked tracks from YouTube Music via Google OAuth.',
   },
 };
