@@ -14,8 +14,8 @@
   </p>
 
   <p align="center">
-    <a href="https://spotify.swarnimbandekar.in/now-playing?uid=a55e8495c5">
-      <img src="https://spotify.swarnimbandekar.in/now-playing?uid=a55e8495c5" alt="Spotify Now Playing" />
+    <a href="https://spotify.swarnimbandekar.in/now-playing?uid=b6d1c197e7">
+      <img src="https://spotify.swarnimbandekar.in/now-playing?uid=b6d1c197e7" alt="Spotify Now Playing" />
     </a>
   </p>
 </div>
