@@ -22,9 +22,15 @@
 
 ## ✨ Features
 
-- **Real-time Updates**: Reflects what you are currently listening to on Spotify.
+- **Multi-Platform Support**:
+  - **Spotify**: Direct OAuth 2.0 integration (BYO App credentials).
+  - **Last.fm**: Works with **Apple Music, YouTube Music, Tidal, Qobuz, SoundCloud**, and local players via scrobbling.
+  - **ListenBrainz**: Open-source scrobbling by MetaBrainz (zero API keys or OAuth needed).
+  - **Deezer**: Direct OAuth 2.0 integration (BYO App credentials).
+  - **Navidrome / Subsonic**: Self-hosted music servers implementing the Subsonic / OpenSubsonic API.
+- **Real-time Updates**: Reflects what you are currently listening to (with automatic fallback to your last played track).
 - **Server-Side Caching**: Uses in-memory caching (30s TTL) to reduce API calls and protect rate limits.
-- **SVG Rendering**: Returns a crisp, lightweight SVG image that renders perfectly in GitHub Readmes.
+- **SVG Rendering**: Returns a crisp, lightweight SVG image that renders perfectly in GitHub Readmes, accented by each platform's brand color.
 - **Dynamic Styling**: Beautifully designed templates that look great in any theme.
 - **Easy Integration**: Simple Markdown or HTML snippets for embedding.
 - **Secure Auth**: Uses Spotify OAuth 2.0 with state verification to prevent CSRF.

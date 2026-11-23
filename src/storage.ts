@@ -1,5 +1,6 @@
 import * as admin from 'firebase-admin';
 import dotenv from 'dotenv';
+import { ProviderId, UserData } from './types';
 
 dotenv.config();
 
@@ -11,11 +12,9 @@ if (!admin.apps.length) {
   if (serviceAccount) {
     let credentials;
     try {
-      // Try to parse as raw JSON
       credentials = JSON.parse(serviceAccount);
     } catch (e) {
       try {
-        // Try to decode from Base64
         credentials = JSON.parse(Buffer.from(serviceAccount, 'base64').toString('utf-8'));
       } catch (e2) {
         throw new Error('FIREBASE_SERVICE_ACCOUNT must be a valid JSON string or Base64 encoded JSON.');
@@ -41,18 +40,6 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 const USERS_COLLECTION = 'users';
 
-interface UserData {
-  uid: string;
-  spotifyId: string;
-  displayName: string;
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: number;
-  clientId: string;
-  clientSecret: string;
-  lastPlayed?: any;
-}
-
 export const saveUser = async (uid: string, data: Omit<UserData, 'uid'>) => {
   await db.collection(USERS_COLLECTION).doc(uid).set(data);
 };
@@ -73,6 +60,28 @@ export const getUserBySpotifyId = async (spotifyId: string): Promise<UserData | 
     const data = doc.data() as Omit<UserData, 'uid'>;
     return { uid: doc.id, ...data };
   }
+  return null;
+};
+
+export const getUserByProviderId = async (provider: ProviderId, providerUserId: string): Promise<UserData | null> => {
+  const querySnapshot = await db
+    .collection(USERS_COLLECTION)
+    .where('provider', '==', provider)
+    .where('providerUserId', '==', providerUserId)
+    .limit(1)
+    .get();
+
+  if (!querySnapshot.empty) {
+    const doc = querySnapshot.docs[0];
+    const data = doc.data() as Omit<UserData, 'uid'>;
+    return { uid: doc.id, ...data };
+  }
+
+  // Backward compatibility for existing Spotify users stored without `provider`
+  if (provider === 'spotify') {
+    return getUserBySpotifyId(providerUserId);
+  }
+
   return null;
 };
 

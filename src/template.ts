@@ -1,3 +1,5 @@
+import { NowPlayingData, PROVIDERS } from './types';
+
 const truncate = (str: string, n: number) => {
   return str.length > n ? str.slice(0, n - 1) + '...' : str;
 };
@@ -13,11 +15,11 @@ const escapeHtml = (unsafe: string) => {
 
 const FONT_STACK = "'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
-export const getSVGTemplate = (data: any, albumArtBase64?: string | null) => {
+export const getSVGTemplate = (data: NowPlayingData | null, albumArtBase64?: string | null) => {
   const width = 350;
   const height = 114;
 
-  if (!data || !data.item) {
+  if (!data) {
     return `
       <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="none" xmlns="http://www.w3.org/2000/svg">
         <rect width="${width}" height="${height}" rx="16" fill="#121212" />
@@ -27,14 +29,22 @@ export const getSVGTemplate = (data: any, albumArtBase64?: string | null) => {
     `;
   }
 
-  const { item, is_playing, is_fallback } = data;
-  const rawTrackName = escapeHtml(item.name);
-  const rawArtistName = escapeHtml(item.artists.map((a: any) => a.name).join(', '));
-  const trackName = escapeHtml(truncate(item.name, 25));
-  const artistName = escapeHtml(truncate(item.artists.map((a: any) => a.name).join(', '), 30));
-  const albumArt = albumArtBase64 || item.album.images[0].url;
-  const statusLabel = is_fallback ? 'Recently Played' : (is_playing ? 'Currently Playing' : 'Paused');
-  const statusColor = is_fallback ? '#A7A7A7' : '#1DB954';
+  const { trackName: rawTrack, artistName: rawArtist, albumArtUrl, isPlaying, isFallback, provider } = data;
+  const accentColor = PROVIDERS[provider]?.color || '#1DB954';
+  const rawTrackName = escapeHtml(rawTrack);
+  const rawArtistName = escapeHtml(rawArtist);
+  const trackName = escapeHtml(truncate(rawTrack, 25));
+  const artistName = escapeHtml(truncate(rawArtist, 30));
+  const albumArt = albumArtBase64 || albumArtUrl;
+  const statusLabel = isFallback ? 'Recently Played' : (isPlaying ? 'Currently Playing' : 'Paused');
+  const statusColor = isFallback ? '#A7A7A7' : accentColor;
+
+  const albumArtElement = albumArt
+    ? `<image href="${escapeHtml(albumArt)}" x="16" y="17" width="80" height="80" clip-path="url(#albumArtClip)" preserveAspectRatio="xMidYMid slice" />`
+    : `
+      <rect x="16" y="17" width="80" height="80" rx="12" fill="#1E1E1E" />
+      <path d="M64 42v20.5a5.5 5.5 0 1 1-3-4.9V47l-11 2.6v15.9a5.5 5.5 0 1 1-3-4.9V45.5l17-4.5z" fill="#555555" />
+    `;
 
   return `
     <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -44,9 +54,9 @@ export const getSVGTemplate = (data: any, albumArtBase64?: string | null) => {
         .artist-name { font: 400 14px ${FONT_STACK}; fill: #b3b3b3; }
         .status-text { font: 600 11px ${FONT_STACK}; fill: ${statusColor}; text-transform: uppercase; letter-spacing: 0.1em; }
         
-        .bars-container { display: ${is_playing ? 'block' : 'none'}; }
+        .bars-container { display: ${isPlaying ? 'block' : 'none'}; }
         .bar { 
-          fill: #1DB954; 
+          fill: ${accentColor}; 
           animation: equalize 1s infinite; 
           transform-origin: bottom;
           transform-box: fill-box;
@@ -68,7 +78,7 @@ export const getSVGTemplate = (data: any, albumArtBase64?: string | null) => {
           to { opacity: 1; transform: translateY(0); }
         }
 
-        .pulse { animation: pulse 2s infinite; display: ${!is_playing ? 'block' : 'none'}; }
+        .pulse { animation: pulse 2s infinite; display: ${!isPlaying ? 'block' : 'none'}; }
         @keyframes pulse {
           0% { opacity: 1; transform: scale(1); }
           50% { opacity: 0.5; transform: scale(1.1); }
@@ -88,7 +98,7 @@ export const getSVGTemplate = (data: any, albumArtBase64?: string | null) => {
           <rect x="0" y="-16" width="222" height="65" />
         </clipPath>
         
-        <image href="${albumArt}" x="16" y="17" width="80" height="80" clip-path="url(#albumArtClip)" preserveAspectRatio="xMidYMid slice" />
+        ${albumArtElement}
         
         <g transform="translate(112, 35)">
           <g clip-path="url(#textClip)">
@@ -97,7 +107,7 @@ export const getSVGTemplate = (data: any, albumArtBase64?: string | null) => {
           </g>
           
           <g transform="translate(0, 40)">
-            ${is_playing ? `
+            ${isPlaying ? `
               <g class="bars-container" transform="translate(0, 1)">
                 <rect class="bar" x="0" y="0" width="3" height="12" rx="1.5" />
                 <rect class="bar" x="5" y="0" width="3" height="12" rx="1.5" />
@@ -107,7 +117,7 @@ export const getSVGTemplate = (data: any, albumArtBase64?: string | null) => {
             ` : `
               <circle class="pulse" cx="4" cy="7" r="4" fill="${statusColor}" style="transform-origin: 4px 7px;" />
             `}
-            <text class="status-text" x="${is_playing ? 24 : 16}" y="11">${statusLabel}</text>
+            <text class="status-text" x="${isPlaying ? 24 : 16}" y="11">${statusLabel}</text>
           </g>
         </g>
       </g>
@@ -115,27 +125,28 @@ export const getSVGTemplate = (data: any, albumArtBase64?: string | null) => {
   `;
 };
 
-export const getTemplate = (data: any) => {
-  if (!data || !data.item) {
+export const getTemplate = (data: NowPlayingData | null) => {
+  if (!data) {
     return `
-      <div id="spotify-widget" style="font-family: ${FONT_STACK}; background: #121212; color: #fff; padding: 20px; border-radius: 12px; width: 300px; display: flex; align-items: center; justify-content: center; border: 1px solid #333;">
+      <div id="music-widget" style="font-family: ${FONT_STACK}; background: #121212; color: #fff; padding: 20px; border-radius: 12px; width: 300px; display: flex; align-items: center; justify-content: center; border: 1px solid #333;">
         <p style="margin: 0; font-size: 14px; color: #b3b3b3;">Not playing anything</p>
       </div>
     `;
   }
 
-  const { item, is_playing, is_fallback } = data;
-  const trackName = escapeHtml(item.name);
-  const artistName = escapeHtml(item.artists.map((a: any) => a.name).join(', '));
-  const albumImageUrl = item.album.images[0].url;
-  const trackUrl = item.external_urls.spotify;
-  const statusLabel = is_fallback ? 'Recently Played' : (is_playing ? 'Currently Playing' : 'Paused');
-  const statusColor = is_fallback ? '#A7A7A7' : '#1DB954';
+  const { trackName: rawTrack, artistName: rawArtist, albumArtUrl, trackUrl, isPlaying, isFallback, provider } = data;
+  const accentColor = PROVIDERS[provider]?.color || '#1DB954';
+  const trackName = escapeHtml(rawTrack);
+  const artistName = escapeHtml(rawArtist);
+  const statusLabel = isFallback ? 'Recently Played' : (isPlaying ? 'Currently Playing' : 'Paused');
+  const statusColor = isFallback ? '#A7A7A7' : accentColor;
+  const tag = trackUrl ? 'a' : 'div';
+  const hrefAttr = trackUrl ? `href="${escapeHtml(trackUrl)}" target="_blank"` : '';
 
   return `
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600&display=swap');
-      #spotify-widget {
+      #music-widget {
         font-family: ${FONT_STACK};
         background: rgba(18, 18, 18, 0.8);
         backdrop-filter: blur(10px);
@@ -157,7 +168,7 @@ export const getTemplate = (data: any) => {
         from { opacity: 0; transform: translateY(20px); }
         to { opacity: 1; transform: translateY(0); }
       }
-      #spotify-widget:hover {
+      #music-widget:hover {
         transform: translateY(-4px);
         box-shadow: 0 12px 40px rgba(0,0,0,0.6);
         border-color: ${statusColor};
@@ -170,6 +181,10 @@ export const getTemplate = (data: any) => {
         object-fit: cover;
         box-shadow: 0 4px 12px rgba(0,0,0,0.5);
         flex-shrink: 0;
+        background: #1e1e1e;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
       .track-info {
         display: flex;
@@ -218,14 +233,14 @@ export const getTemplate = (data: any) => {
         font-weight: 600;
       }
       .audio-bars {
-        display: ${is_playing ? 'flex' : 'none'};
+        display: ${isPlaying ? 'flex' : 'none'};
         align-items: flex-end;
         gap: 2px;
         height: 12px;
       }
       .audio-bars div {
         width: 3px;
-        background: #1DB954;
+        background: ${accentColor};
         animation: equalize 1s infinite;
         border-radius: 1px;
       }
@@ -240,13 +255,17 @@ export const getTemplate = (data: any) => {
         100% { opacity: 1; transform: scale(1); }
       }
     </style>
-    <a id="spotify-widget" href="${trackUrl}" target="_blank">
-      <img src="${albumImageUrl}" class="album-art" alt="Album Art">
+    <${tag} id="music-widget" ${hrefAttr}>
+      ${
+        albumArtUrl
+          ? `<img src="${escapeHtml(albumArtUrl)}" class="album-art" alt="Album Art">`
+          : `<div class="album-art"><svg width="32" height="32" viewBox="0 0 24 24" fill="#555"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg></div>`
+      }
       <div class="track-info">
         <p class="track-name" title="${trackName}">${trackName}</p>
         <p class="artist-name" title="${artistName}">${artistName}</p>
         <div class="status">
-          ${is_playing ? `
+          ${isPlaying ? `
             <div class="audio-bars">
               <div style="animation-delay: 0.1s"></div>
               <div style="animation-delay: 0.3s"></div>
@@ -259,7 +278,6 @@ export const getTemplate = (data: any) => {
           <span class="status-text">${statusLabel}</span>
         </div>
       </div>
-    </a>
+    </${tag}>
   `;
 };
-
