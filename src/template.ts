@@ -37,7 +37,7 @@ export const getSVGTemplate = (data: NowPlayingData | null, albumArtBase64?: str
   const artistName = escapeHtml(truncate(rawArtist, 30));
   const albumArt = albumArtBase64 || albumArtUrl;
   const statusLabel = isFallback ? 'Recently Played' : (isPlaying ? 'Currently Playing' : 'Paused');
-  const statusColor = isFallback ? '#A7A7A7' : accentColor;
+  const statusColor = isPlaying ? accentColor : '#A7A7A7';
 
   const albumArtElement = albumArt
     ? `<image href="${escapeHtml(albumArt)}" x="16" y="17" width="80" height="80" clip-path="url(#albumArtClip)" preserveAspectRatio="xMidYMid slice" />`
@@ -139,7 +139,7 @@ export const getTemplate = (data: NowPlayingData | null) => {
   const trackName = escapeHtml(rawTrack);
   const artistName = escapeHtml(rawArtist);
   const statusLabel = isFallback ? 'Recently Played' : (isPlaying ? 'Currently Playing' : 'Paused');
-  const statusColor = isFallback ? '#A7A7A7' : accentColor;
+  const statusColor = isPlaying ? accentColor : '#A7A7A7';
   const tag = trackUrl ? 'a' : 'div';
   const hrefAttr = trackUrl ? `href="${escapeHtml(trackUrl)}" target="_blank"` : '';
 

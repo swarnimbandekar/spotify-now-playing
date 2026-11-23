@@ -40,8 +40,18 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 const USERS_COLLECTION = 'users';
 
+const stripUndefined = <T extends Record<string, any>>(obj: T): Partial<T> => {
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned as Partial<T>;
+};
+
 export const saveUser = async (uid: string, data: Omit<UserData, 'uid'>) => {
-  await db.collection(USERS_COLLECTION).doc(uid).set(data, { merge: true });
+  await db.collection(USERS_COLLECTION).doc(uid).set(stripUndefined(data), { merge: true });
 };
 
 export const saveProviderConnection = async (
@@ -52,7 +62,7 @@ export const saveProviderConnection = async (
 ) => {
   const payload: Record<string, any> = {
     providers: {
-      [provider]: connection,
+      [provider]: stripUndefined(connection),
     },
   };
   if (displayName) {
@@ -69,17 +79,13 @@ export const updateProviderConnection = async (
   provider: ProviderId,
   partial: Partial<ProviderConnection>
 ) => {
-  const updates: Record<string, any> = {};
-  for (const [key, value] of Object.entries(partial)) {
-    if (value !== undefined) {
-      updates[`providers.${provider}.${key}`] = value;
-    }
-  }
-  if (Object.keys(updates).length === 0) return;
+  const cleaned = stripUndefined(partial);
+  if (Object.keys(cleaned).length === 0) return;
+
   await db.collection(USERS_COLLECTION).doc(uid).set(
     {
       providers: {
-        [provider]: partial,
+        [provider]: cleaned,
       },
     },
     { merge: true }
@@ -131,7 +137,6 @@ export const getUserBySpotifyId = async (spotifyId: string): Promise<UserData | 
 };
 
 export const getUserByProviderId = async (provider: ProviderId, providerUserId: string): Promise<UserData | null> => {
-  // Check new nested providers.<provider>.providerUserId first
   const nestedSnap = await db
     .collection(USERS_COLLECTION)
     .where(`providers.${provider}.providerUserId`, '==', providerUserId)
@@ -144,7 +149,6 @@ export const getUserByProviderId = async (provider: ProviderId, providerUserId: 
     return { uid: doc.id, ...data };
   }
 
-  // Fallback for legacy single-provider docs
   const legacySnap = await db
     .collection(USERS_COLLECTION)
     .where('provider', '==', provider)

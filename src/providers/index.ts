@@ -7,6 +7,17 @@ import { getYouTubeNowPlaying } from './youtube';
 
 const cache = new NodeCache({ stdTTL: 30 }); // Cache for 30 seconds
 
+const stripUndefined = <T extends Record<string, any>>(obj?: T): Partial<T> => {
+  if (!obj) return {};
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned as Partial<T>;
+};
+
 export const getUserConnections = (
   user: UserData | null
 ): Partial<Record<ProviderId, ProviderConnection>> => {
@@ -14,10 +25,9 @@ export const getUserConnections = (
 
   const connections: Partial<Record<ProviderId, ProviderConnection>> = {};
 
-  if (user.providers?.spotify?.accessToken) {
-    connections.spotify = user.providers.spotify;
-  } else if (user.accessToken && (!user.provider || user.provider === 'spotify')) {
-    // Legacy single-provider Spotify user
+  // Merge legacy top-level Spotify fields with nested providers.spotify (nested takes precedence)
+  let legacySpotify: Partial<ProviderConnection> | undefined;
+  if (user.accessToken && (!user.provider || user.provider === 'spotify')) {
     let legacyLastPlayed: NowPlayingData | undefined;
     if (user.lastPlayed) {
       if ('trackName' in user.lastPlayed) {
@@ -26,7 +36,7 @@ export const getUserConnections = (
         legacyLastPlayed = normalizeSpotifyTrack(user.lastPlayed.item, false, true);
       }
     }
-    connections.spotify = {
+    legacySpotify = {
       providerUserId: user.providerUserId || user.spotifyId || '',
       displayName: user.displayName,
       accessToken: user.accessToken,
@@ -38,10 +48,23 @@ export const getUserConnections = (
     };
   }
 
-  if (user.providers?.youtube?.accessToken) {
-    connections.youtube = user.providers.youtube;
-  } else if (user.accessToken && user.provider === 'youtube') {
-    connections.youtube = {
+  const nestedSpotify = stripUndefined(user.providers?.spotify);
+  if (nestedSpotify.accessToken || legacySpotify?.accessToken) {
+    connections.spotify = {
+      providerUserId: '',
+      displayName: user.displayName || '',
+      accessToken: '',
+      refreshToken: '',
+      expiresAt: 0,
+      ...stripUndefined(legacySpotify),
+      ...nestedSpotify,
+    } as ProviderConnection;
+  }
+
+  // Merge legacy top-level YouTube fields with nested providers.youtube (nested takes precedence)
+  let legacyYoutube: Partial<ProviderConnection> | undefined;
+  if (user.accessToken && user.provider === 'youtube') {
+    legacyYoutube = {
       providerUserId: user.providerUserId || '',
       displayName: user.displayName,
       accessToken: user.accessToken,
@@ -53,6 +76,19 @@ export const getUserConnections = (
     };
   }
 
+  const nestedYoutube = stripUndefined(user.providers?.youtube);
+  if (nestedYoutube.accessToken || legacyYoutube?.accessToken) {
+    connections.youtube = {
+      providerUserId: '',
+      displayName: user.displayName || '',
+      accessToken: '',
+      refreshToken: '',
+      expiresAt: 0,
+      ...stripUndefined(legacyYoutube),
+      ...nestedYoutube,
+    } as ProviderConnection;
+  }
+
   return connections;
 };
 
@@ -62,10 +98,8 @@ export const invalidateCache = (uid: string) => {
 
 /**
  * Picks the single best track to display when one or both providers are connected:
- * 1. Real-time active playback on Spotify wins if Spotify is actively playing
- *    (unless YouTube Music detected an even newer track change while Spotify is not playing).
- * 2. If only one provider is actively playing, show that one.
- * 3. If both are actively playing or both are idle/fallback, show whichever had the most recent activity.
+ * 1. If only one player is actively playing, show that player.
+ * 2. If both are actively playing or both are idle/fallback, show whichever had the most recent activity.
  */
 const pickActiveTrack = (results: ProviderFetchResult[]): NowPlayingData | null => {
   const valid = results.filter((r): r is { data: NowPlayingData; lastActiveAt: number } => Boolean(r.data));
@@ -78,7 +112,6 @@ const pickActiveTrack = (results: ProviderFetchResult[]): NowPlayingData | null 
   }
 
   const pool = playing.length > 1 ? playing : valid;
-  // Prefer Spotify on exact timestamp tie since Spotify has true live playback state
   pool.sort((a, b) => {
     if (b.lastActiveAt !== a.lastActiveAt) return b.lastActiveAt - a.lastActiveAt;
     if (a.data.provider === 'spotify') return -1;

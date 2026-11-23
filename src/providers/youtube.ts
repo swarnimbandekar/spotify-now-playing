@@ -1,14 +1,17 @@
 import axios from 'axios';
+import NodeCache from 'node-cache';
 import { updateProviderConnection } from '../storage';
 import { NowPlayingData, ProviderConnection } from '../types';
 import { ProviderFetchResult } from './spotify';
+
+const visitorCache = new NodeCache({ stdTTL: 1800 }); // 30 minutes
+const VISITOR_CACHE_KEY = 'ytm_visitor_data';
+const ACTIVE_WINDOW_MS = 3 * 60 * 1000;
 
 const getServerYouTubeCreds = () => ({
   clientId: process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '',
   clientSecret: process.env.YOUTUBE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '',
 });
-
-const cleanChannelName = (name: string) => name.replace(/\s*-\s*Topic$/i, '').trim();
 
 const pickBestThumbnail = (thumbnails: any): string | null => {
   if (!thumbnails) return null;
@@ -120,130 +123,373 @@ export const refreshYouTubeToken = async (uid: string, conn: ProviderConnection)
 
   const { access_token, expires_in, refresh_token } = response.data;
   const expiresAt = Date.now() + expires_in * 1000;
+  const updatedRefresh = refresh_token || conn.refreshToken;
+
+  conn.accessToken = access_token;
+  conn.refreshToken = updatedRefresh;
+  conn.expiresAt = expiresAt;
+
   await updateProviderConnection(uid, 'youtube', {
+    ...conn,
     accessToken: access_token,
-    refreshToken: refresh_token || conn.refreshToken,
+    refreshToken: updatedRefresh,
     expiresAt,
   });
 
   return access_token;
 };
 
-const fetchInnerTubeHistory = async (accessToken: string): Promise<NowPlayingData | null> => {
-  const response = await axios.post(
-    'https://music.youtube.com/youtubei/v1/browse',
-    {
-      context: {
-        client: {
-          clientName: 'WEB_REMIX',
-          clientVersion: '1.20250101.01.00',
-          hl: 'en',
-        },
-      },
-      browseId: 'FEmusic_history',
-    },
-    {
+const getVisitorData = async (): Promise<string> => {
+  const cached = visitorCache.get<string>(VISITOR_CACHE_KEY);
+  if (cached) return cached;
+
+  try {
+    const res = await fetch('https://music.youtube.com/youtubei/v1/browse?alt=json', {
+      method: 'POST',
       headers: {
-        Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
+        Accept: '*/*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0',
         Origin: 'https://music.youtube.com',
-        Referer: 'https://music.youtube.com/',
+        Cookie: 'SOCS=CAI',
       },
-      timeout: 6000,
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: 'WEB_REMIX',
+            clientVersion: '1.20250310.01.00',
+            hl: 'en',
+          },
+          user: {},
+        },
+        browseId: 'FEmusic_home',
+      }),
+      signal: AbortSignal.timeout(6000),
+    });
+
+    if (res.ok) {
+      const json: any = await res.json();
+      const visitorData = json?.responseContext?.visitorData;
+      if (typeof visitorData === 'string' && visitorData) {
+        visitorCache.set(VISITOR_CACHE_KEY, visitorData);
+        return visitorData;
+      }
     }
+  } catch (err) {
+    console.error('Error fetching YouTube Music visitorData:', err);
+  }
+
+  return '';
+};
+
+const extractTextFromRuns = (runs: any[]): string => {
+  if (!Array.isArray(runs)) return '';
+  return runs.map((r) => r?.text || '').join('').trim();
+};
+
+const parseMusicResponsiveListItem = (renderer: any): NowPlayingData | null => {
+  if (!renderer || typeof renderer !== 'object') return null;
+
+  const flexColumns = Array.isArray(renderer.flexColumns) ? renderer.flexColumns : [];
+  let titleText = '';
+  let artistText = '';
+  let videoId: string | undefined =
+    renderer.playlistItemData?.videoId ||
+    renderer.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer
+      ?.playNavigationEndpoint?.watchEndpoint?.videoId;
+
+  for (let i = 0; i < flexColumns.length; i++) {
+    const colRuns = flexColumns[i]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs;
+    if (!Array.isArray(colRuns) || colRuns.length === 0) continue;
+
+    for (const run of colRuns) {
+      const watchId = run?.navigationEndpoint?.watchEndpoint?.videoId;
+      if (watchId && !videoId) {
+        videoId = watchId;
+      }
+    }
+
+    const firstNav = colRuns[0]?.navigationEndpoint;
+    if (firstNav?.watchEndpoint && !titleText) {
+      titleText = extractTextFromRuns(colRuns);
+      continue;
+    }
+
+    const pageType =
+      firstNav?.browseEndpoint?.browseEndpointContextSupportedConfigs
+        ?.browseEndpointContextMusicConfig?.pageType;
+    if (
+      !artistText &&
+      (pageType === 'MUSIC_PAGE_TYPE_ARTIST' ||
+        pageType === 'MUSIC_PAGE_TYPE_UNKNOWN' ||
+        pageType === 'MUSIC_PAGE_TYPE_USER_CHANNEL')
+    ) {
+      const artists = colRuns
+        .map((r: any) => r?.text?.trim())
+        .filter(
+          (t: string) =>
+            t && t !== '•' && t !== '&' && t !== ',' && !/^\d+:\d+$/.test(t)
+        );
+      if (artists.length > 0) {
+        artistText = artists.join(', ');
+      }
+    }
+  }
+
+  if (!titleText) {
+    titleText = extractTextFromRuns(
+      flexColumns[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs
+    );
+  }
+  if (!artistText) {
+    const fallbackRuns = flexColumns[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs || [];
+    const firstArtist = fallbackRuns
+      .map((r: any) => r?.text?.trim())
+      .filter((t: string) => t && t !== '•' && t !== '&' && t !== ',' && !/^\d+:\d+$/.test(t))[0];
+    artistText = firstArtist || 'YouTube Music';
+  }
+
+  if (!videoId && Array.isArray(renderer.menu?.menuRenderer?.items)) {
+    for (const item of renderer.menu.menuRenderer.items) {
+      const menuVideoId =
+        item?.menuNavigationItemRenderer?.navigationEndpoint?.watchEndpoint?.videoId ||
+        item?.menuServiceItemRenderer?.serviceEndpoint?.queueAddEndpoint?.queueTarget?.videoId;
+      if (menuVideoId) {
+        videoId = menuVideoId;
+        break;
+      }
+    }
+  }
+
+  if (!titleText || titleText === 'Song deleted') return null;
+
+  const albumArtUrl = pickBestThumbnail(
+    renderer.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails ||
+      renderer.thumbnail?.thumbnails
   );
 
-  const sections =
-    response.data?.contents?.singleColumnBrowseResultsRenderer?.tabs?.[0]?.tabRenderer?.content
-      ?.sectionListRenderer?.contents;
+  return {
+    provider: 'youtube',
+    trackName: titleText,
+    artistName: artistText || 'YouTube Music',
+    albumArtUrl,
+    trackUrl: videoId ? `https://music.youtube.com/watch?v=${videoId}` : 'https://music.youtube.com',
+    isPlaying: false,
+    isFallback: true,
+  };
+};
 
-  if (!Array.isArray(sections)) return null;
+const parseVideoRenderer = (renderer: any): NowPlayingData | null => {
+  if (!renderer || typeof renderer !== 'object') return null;
+  const trackName =
+    extractTextFromRuns(renderer.title?.runs) || renderer.title?.simpleText || '';
+  if (!trackName) return null;
 
-  for (const section of sections) {
-    const items = section?.musicShelfRenderer?.contents;
-    if (!Array.isArray(items) || items.length === 0) continue;
+  const artistName =
+    extractTextFromRuns(renderer.ownerText?.runs) ||
+    extractTextFromRuns(renderer.shortBylineText?.runs) ||
+    extractTextFromRuns(renderer.longBylineText?.runs) ||
+    'YouTube Music';
 
-    const renderer = items[0]?.musicResponsiveListItemRenderer;
-    if (!renderer) continue;
+  const videoId = renderer.videoId || renderer.navigationEndpoint?.watchEndpoint?.videoId;
+  const albumArtUrl = pickBestThumbnail(renderer.thumbnail?.thumbnails);
 
-    const flexColumns = renderer.flexColumns || [];
-    const trackName =
-      flexColumns[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.[0]?.text;
-    const artistRuns =
-      flexColumns[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs || [];
-    const artistName =
-      artistRuns
-        .map((r: any) => r.text)
-        .filter((t: string) => t && t.trim() !== '•' && t.trim() !== '&')
-        .slice(0, 1)
-        .join(', ') || 'YouTube Music';
+  return {
+    provider: 'youtube',
+    trackName,
+    artistName,
+    albumArtUrl,
+    trackUrl: videoId ? `https://music.youtube.com/watch?v=${videoId}` : 'https://music.youtube.com',
+    isPlaying: false,
+    isFallback: true,
+  };
+};
 
-    const videoId =
-      renderer.playlistItemData?.videoId ||
-      renderer.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer
-        ?.playNavigationEndpoint?.watchEndpoint?.videoId;
+const parseLockupViewModel = (vm: any): NowPlayingData | null => {
+  if (!vm || typeof vm !== 'object') return null;
+  const meta = vm.metadata?.lockupMetadataViewModel;
+  const trackName = meta?.title?.content;
+  if (!trackName) return null;
 
-    const albumArtUrl = pickBestThumbnail(
-      renderer.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails
-    );
+  const artistName =
+    meta?.metadata?.contentMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]?.text
+      ?.content || 'YouTube Music';
+  const videoId = vm.contentId;
+  const albumArtUrl = pickBestThumbnail(
+    vm.contentImage?.thumbnailViewModel?.image?.sources ||
+      vm.contentImage?.collectionThumbnailViewModel?.primaryThumbnail?.thumbnailViewModel?.image
+        ?.sources
+  );
 
-    if (trackName) {
-      return {
-        provider: 'youtube',
-        trackName,
-        artistName,
-        albumArtUrl,
-        trackUrl: videoId ? `https://music.youtube.com/watch?v=${videoId}` : 'https://music.youtube.com',
-        isPlaying: false,
-        isFallback: true,
-      };
+  return {
+    provider: 'youtube',
+    trackName,
+    artistName,
+    albumArtUrl,
+    trackUrl: videoId ? `https://music.youtube.com/watch?v=${videoId}` : 'https://music.youtube.com',
+    isPlaying: false,
+    isFallback: true,
+  };
+};
+
+const extractFirstHistoryTrack = (node: any): NowPlayingData | null => {
+  if (!node || typeof node !== 'object') return null;
+
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = extractFirstHistoryTrack(item);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  if (node.musicResponsiveListItemRenderer) {
+    const parsed = parseMusicResponsiveListItem(node.musicResponsiveListItemRenderer);
+    if (parsed) return parsed;
+  }
+  if (node.videoRenderer) {
+    const parsed = parseVideoRenderer(node.videoRenderer);
+    if (parsed) return parsed;
+  }
+  if (node.compactVideoRenderer) {
+    const parsed = parseVideoRenderer(node.compactVideoRenderer);
+    if (parsed) return parsed;
+  }
+  if (node.lockupViewModel) {
+    const parsed = parseLockupViewModel(node.lockupViewModel);
+    if (parsed) return parsed;
+  }
+
+  for (const key of Object.keys(node)) {
+    if (key === 'responseContext' || key === 'trackingParams') continue;
+    const val = node[key];
+    if (val && typeof val === 'object') {
+      const found = extractFirstHistoryTrack(val);
+      if (found) return found;
     }
   }
 
   return null;
 };
 
-const fetchLikedMusicFallback = async (accessToken: string): Promise<NowPlayingData | null> => {
-  try {
-    const lmRes = await axios.get('https://www.googleapis.com/youtube/v3/playlistItems', {
-      params: { part: 'snippet', playlistId: 'LM', maxResults: 1 },
-      headers: { Authorization: `Bearer ${accessToken}` },
-      timeout: 6000,
-    });
-    const item = lmRes.data?.items?.[0]?.snippet;
-    if (item?.title) {
-      const videoId = item.resourceId?.videoId;
-      return {
-        provider: 'youtube',
-        trackName: item.title,
-        artistName: cleanChannelName(item.videoOwnerChannelTitle || item.channelTitle || 'YouTube Music'),
-        albumArtUrl: pickBestThumbnail(item.thumbnails),
-        trackUrl: videoId ? `https://music.youtube.com/watch?v=${videoId}` : 'https://music.youtube.com',
-        isPlaying: false,
-        isFallback: true,
+interface InnerTubeStrategy {
+  url: string;
+  origin: string;
+  referer: string;
+  userAgent: string;
+  clientNameId: string;
+  clientVersion: string;
+  browseId: string;
+  client: Record<string, any>;
+}
+
+const fetchInnerTubeHistory = async (accessToken: string): Promise<NowPlayingData | null> => {
+  const visitorData = await getVisitorData();
+  const requestTime = String(Math.floor(Date.now() / 1000));
+
+  const strategies: InnerTubeStrategy[] = [
+    {
+      url: 'https://music.youtube.com/youtubei/v1/browse?alt=json',
+      origin: 'https://music.youtube.com',
+      referer: 'https://music.youtube.com/',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0',
+      clientNameId: '67',
+      clientVersion: '1.20250310.01.00',
+      browseId: 'FEmusic_history',
+      client: {
+        clientName: 'WEB_REMIX',
+        clientVersion: '1.20250310.01.00',
+        hl: 'en',
+        ...(visitorData ? { visitorData } : {}),
+      },
+    },
+    {
+      url: 'https://music.youtube.com/youtubei/v1/browse?alt=json',
+      origin: 'https://music.youtube.com',
+      referer: 'https://music.youtube.com/',
+      userAgent: 'com.google.android.apps.youtube.music/7.21.50 (Linux; U; Android 14; en_US) gzip',
+      clientNameId: '21',
+      clientVersion: '7.21.50',
+      browseId: 'FEmusic_history',
+      client: {
+        clientName: 'ANDROID_MUSIC',
+        clientVersion: '7.21.50',
+        androidSdkVersion: 34,
+        osName: 'Android',
+        osVersion: '14',
+        platform: 'MOBILE',
+        hl: 'en',
+        ...(visitorData ? { visitorData } : {}),
+      },
+    },
+    {
+      url: 'https://www.youtube.com/youtubei/v1/browse?alt=json',
+      origin: 'https://www.youtube.com',
+      referer: 'https://www.youtube.com/',
+      userAgent: 'com.google.ios.youtube/20.11.6 (iPhone10,4; U; CPU iOS 16_7_7 like Mac OS X)',
+      clientNameId: '5',
+      clientVersion: '20.11.6',
+      browseId: 'FEhistory',
+      client: {
+        clientName: 'IOS',
+        clientVersion: '20.11.6',
+        deviceMake: 'Apple',
+        deviceModel: 'iPhone10,4',
+        osName: 'iOS',
+        osVersion: '16.7.7.20H330',
+        hl: 'en',
+        ...(visitorData ? { visitorData } : {}),
+      },
+    },
+  ];
+
+  for (const strategy of strategies) {
+    try {
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        Accept: '*/*',
+        Origin: strategy.origin,
+        Referer: strategy.referer,
+        Cookie: 'SOCS=CAI',
+        'User-Agent': strategy.userAgent,
+        'X-Goog-Request-Time': requestTime,
+        'X-Youtube-Client-Name': strategy.clientNameId,
+        'X-Youtube-Client-Version': strategy.clientVersion,
       };
+      if (visitorData) {
+        headers['X-Goog-Visitor-Id'] = visitorData;
+      }
+
+      const res = await fetch(strategy.url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          context: {
+            client: strategy.client,
+            user: {},
+          },
+          browseId: strategy.browseId,
+        }),
+        signal: AbortSignal.timeout(6000),
+      });
+
+      if (!res.ok) {
+        console.warn(`YouTube history strategy ${strategy.client.clientName} returned ${res.status}`);
+        continue;
+      }
+
+      const json: any = await res.json();
+      const parsed = extractFirstHistoryTrack(json?.contents);
+      if (parsed) {
+        return parsed;
+      }
+    } catch (err) {
+      console.warn(`YouTube history strategy ${strategy.client.clientName} failed:`, err);
     }
-  } catch {
-    // Fall through to general liked videos
   }
 
-  const likeRes = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
-    params: { part: 'snippet', myRating: 'like', maxResults: 1 },
-    headers: { Authorization: `Bearer ${accessToken}` },
-    timeout: 6000,
-  });
-  const video = likeRes.data?.items?.[0];
-  if (!video?.snippet?.title) return null;
-
-  return {
-    provider: 'youtube',
-    trackName: video.snippet.title,
-    artistName: cleanChannelName(video.snippet.channelTitle || 'YouTube Music'),
-    albumArtUrl: pickBestThumbnail(video.snippet.thumbnails),
-    trackUrl: `https://music.youtube.com/watch?v=${video.id}`,
-    isPlaying: false,
-    isFallback: true,
-  };
+  return null;
 };
 
 export const getYouTubeNowPlaying = async (
@@ -267,43 +513,51 @@ export const getYouTubeNowPlaying = async (
   }
 
   try {
-    let data: NowPlayingData | null = null;
-
-    try {
-      data = await fetchInnerTubeHistory(accessToken);
-    } catch {
-      // InnerTube may reject web OAuth clients; fall back to official YouTube Data API v3
-    }
-
-    if (!data) {
-      data = await fetchLikedMusicFallback(accessToken);
-    }
+    const data = await fetchInnerTubeHistory(accessToken);
 
     if (data) {
       const prev = conn.lastPlayed;
+      const hadPrev = Boolean(prev?.trackName);
+
+      if (!hadPrev) {
+        // Initial seed of history — never treat existing history as actively playing
+        lastActiveAt = conn.lastActiveAt || 1;
+        const seededData: NowPlayingData = { ...data, isPlaying: false, isFallback: true };
+        await updateProviderConnection(uid, 'youtube', {
+          ...conn,
+          lastPlayed: seededData,
+          lastActiveAt,
+        }).catch((err) => console.error('Error seeding YouTube Music lastPlayed:', err));
+        return { data: seededData, lastActiveAt };
+      }
+
       const trackChanged =
-        !prev || prev.trackName !== data.trackName || prev.artistName !== data.artistName;
+        prev!.trackName !== data.trackName || prev!.artistName !== data.artistName;
 
       if (trackChanged) {
         lastActiveAt = Date.now();
-      }
-
-      // If a brand-new track appeared in YT Music history within the last 4 minutes, treat it as actively playing
-      const isRecentlyChanged = lastActiveAt > 0 && Date.now() - lastActiveAt < 4 * 60 * 1000;
-      const resolvedData: NowPlayingData = {
-        ...data,
-        isPlaying: isRecentlyChanged,
-        isFallback: !isRecentlyChanged,
-      };
-
-      if (trackChanged) {
+        const savedFallback: NowPlayingData = { ...data, isPlaying: false, isFallback: true };
         await updateProviderConnection(uid, 'youtube', {
-          lastPlayed: data,
+          ...conn,
+          lastPlayed: savedFallback,
           lastActiveAt,
         }).catch((err) => console.error('Error saving YouTube Music lastPlayed:', err));
+        return {
+          data: { ...data, isPlaying: true, isFallback: false },
+          lastActiveAt,
+        };
       }
 
-      return { data: resolvedData, lastActiveAt };
+      const isRecentlyChanged =
+        lastActiveAt > 1 && Date.now() - lastActiveAt < ACTIVE_WINDOW_MS;
+      return {
+        data: {
+          ...data,
+          isPlaying: isRecentlyChanged,
+          isFallback: !isRecentlyChanged,
+        },
+        lastActiveAt,
+      };
     }
 
     const fb = conn.lastPlayed

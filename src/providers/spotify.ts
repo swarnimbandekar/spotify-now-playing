@@ -90,9 +90,16 @@ export const refreshSpotifyToken = async (uid: string, conn: ProviderConnection)
 
   const { access_token, expires_in, refresh_token } = response.data;
   const expiresAt = Date.now() + expires_in * 1000;
+  const updatedRefresh = refresh_token || conn.refreshToken;
+
+  conn.accessToken = access_token;
+  conn.refreshToken = updatedRefresh;
+  conn.expiresAt = expiresAt;
+
   await updateProviderConnection(uid, 'spotify', {
+    ...conn,
     accessToken: access_token,
-    refreshToken: refresh_token || conn.refreshToken,
+    refreshToken: updatedRefresh,
     expiresAt,
   });
 
@@ -148,9 +155,11 @@ export const getSpotifyNowPlaying = async (
           const fallbackData = normalizeSpotifyTrack(recentItem.track, false, true);
           const playedAtMs = recentItem.played_at ? Date.parse(recentItem.played_at) : Date.now();
           lastActiveAt = Number.isNaN(playedAtMs) ? lastActiveAt : Math.max(lastActiveAt, playedAtMs);
-          await updateProviderConnection(uid, 'spotify', { lastPlayed: fallbackData, lastActiveAt }).catch((err) =>
-            console.error('Error saving Spotify recently played fallback:', err)
-          );
+          await updateProviderConnection(uid, 'spotify', {
+            ...conn,
+            lastPlayed: fallbackData,
+            lastActiveAt,
+          }).catch((err) => console.error('Error saving Spotify recently played fallback:', err));
           return { data: fallbackData, lastActiveAt };
         }
       } catch (e) {
@@ -161,13 +170,15 @@ export const getSpotifyNowPlaying = async (
     }
 
     const isPlaying = Boolean(response.data.is_playing);
-    const data = normalizeSpotifyTrack(response.data.item, isPlaying, false);
+    const data = normalizeSpotifyTrack(response.data.item, isPlaying, !isPlaying);
     if (isPlaying) {
       lastActiveAt = Date.now();
     }
-    await updateProviderConnection(uid, 'spotify', { lastPlayed: data, lastActiveAt }).catch((err) =>
-      console.error('Error saving Spotify lastPlayed:', err)
-    );
+    await updateProviderConnection(uid, 'spotify', {
+      ...conn,
+      lastPlayed: { ...data, isPlaying: false, isFallback: true },
+      lastActiveAt,
+    }).catch((err) => console.error('Error saving Spotify lastPlayed:', err));
     return { data, lastActiveAt };
   } catch (error) {
     console.error('Error fetching Spotify now playing:', error);
