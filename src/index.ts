@@ -26,7 +26,7 @@ const isValidProvider = (value: unknown): value is ProviderId => {
   return typeof value === 'string' && value in PROVIDERS;
 };
 
-const isProviderConfigured = (provider: ProviderId): boolean => {
+const hasServerCredentials = (provider: ProviderId): boolean => {
   if (provider === 'spotify') {
     return Boolean(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_SECRET_ID);
   }
@@ -36,10 +36,17 @@ const isProviderConfigured = (provider: ProviderId): boolean => {
   );
 };
 
+const maskSecret = (val?: string) => {
+  if (!val) return 'Server App';
+  if (val.length <= 8) return `${val.substring(0, 2)}...`;
+  return `${val.substring(0, 4)}...${val.substring(val.length - 4)}`;
+};
+
 const getConnectionLabel = (user: UserData | null): string => {
   if (!user) return 'Unknown';
   const provider = resolveProvider(user);
-  return `${PROVIDERS[provider].name}: <strong>${user.displayName}</strong>`;
+  const appLabel = user.clientId ? ` (App: ${maskSecret(user.clientId)})` : '';
+  return `${PROVIDERS[provider].name}: <strong>${user.displayName}</strong>${appLabel}`;
 };
 
 app.set('trust proxy', true);
@@ -53,8 +60,9 @@ app.get('/', (req, res) => {
     return res.redirect(`/dashboard?uid=${uid}`);
   }
 
-  const spotifyReady = isProviderConfigured('spotify');
-  const youtubeReady = isProviderConfigured('youtube');
+  const redirectUri = getRedirectUri(req);
+  const spotifyHasServer = hasServerCredentials('spotify');
+  const youtubeHasServer = hasServerCredentials('youtube');
 
   res.send(`
     <html>
@@ -63,10 +71,12 @@ app.get('/', (req, res) => {
         <style>
           @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&display=swap');
           :root {
+            --accent: #1DB954;
             --bg-dark: #090909;
             --surface: #121212;
             --text-main: #FFFFFF;
             --text-dim: #A7A7A7;
+            --input-bg: #1A1A1A;
             --border: rgba(255, 255, 255, 0.1);
           }
           body { 
@@ -89,166 +99,241 @@ app.get('/', (req, res) => {
             transform: translate(-50%, -50%);
             width: 640px;
             height: 640px;
-            background: radial-gradient(circle, rgba(29, 185, 84, 0.12) 0%, rgba(255, 0, 51, 0.08) 45%, rgba(0, 0, 0, 0) 75%);
+            background: radial-gradient(circle, rgba(29, 185, 84, 0.15) 0%, rgba(0, 0, 0, 0) 70%);
             z-index: -1;
             pointer-events: none;
+            transition: background 0.3s ease;
           }
           .container { 
             text-align: center; 
-            background: rgba(18, 18, 18, 0.75); 
-            padding: 40px 36px; 
+            background: rgba(18, 18, 18, 0.78); 
+            padding: 36px; 
             border-radius: 32px; 
             backdrop-filter: blur(20px);
             border: 1px solid var(--border);
             box-shadow: 0 24px 64px rgba(0,0,0,0.6);
-            max-width: 460px;
+            max-width: 480px;
             width: 100%;
             box-sizing: border-box;
           }
           h1 { margin: 0 0 10px 0; font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
-          p { margin: 0 0 28px 0; color: var(--text-dim); line-height: 1.6; font-size: 15px; }
-          .players {
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
+          p { margin: 0 0 24px 0; color: var(--text-dim); line-height: 1.6; font-size: 15px; }
+          .player-tabs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 24px;
           }
-          .connect-btn {
-            width: 100%;
+          .player-tab {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            padding: 16px 20px;
-            border-radius: 16px;
+            justify-content: center;
+            gap: 10px;
+            padding: 12px 16px;
+            border-radius: 14px;
             border: 1px solid var(--border);
             background: rgba(255, 255, 255, 0.04);
-            color: var(--text-main);
+            color: var(--text-dim);
             font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
             cursor: pointer;
-            transition: all 0.25s ease;
-            text-align: left;
-            box-sizing: border-box;
+            transition: all 0.2s;
           }
-          .connect-btn:hover:not(:disabled) {
-            transform: translateY(-2px);
-            background: rgba(255, 255, 255, 0.08);
-          }
-          .connect-btn.spotify:hover:not(:disabled) {
-            border-color: #1DB954;
-            box-shadow: 0 8px 28px rgba(29, 185, 84, 0.2);
-          }
-          .connect-btn.youtube:hover:not(:disabled) {
-            border-color: #FF0033;
-            box-shadow: 0 8px 28px rgba(255, 0, 51, 0.2);
-          }
-          .connect-btn:disabled {
-            opacity: 0.45;
-            cursor: not-allowed;
-          }
-          .player-left {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-          }
-          .player-icon {
-            width: 36px;
-            height: 36px;
-            flex-shrink: 0;
-          }
-          .player-title {
-            font-size: 16px;
-            font-weight: 700;
-            display: block;
-          }
-          .player-sub {
-            font-size: 12px;
-            color: var(--text-dim);
-            display: block;
-            margin-top: 2px;
-          }
-          .connect-pill {
-            font-size: 12px;
-            font-weight: 700;
-            padding: 8px 14px;
-            border-radius: 999px;
-            flex-shrink: 0;
-          }
-          .spotify .connect-pill {
-            background: #1DB954;
-            color: #000;
-          }
-          .youtube .connect-pill {
-            background: #FF0033;
+          .player-tab:hover { color: var(--text-main); border-color: rgba(255,255,255,0.25); }
+          .player-tab.active {
             color: #fff;
+            border-color: var(--accent);
+            background: rgba(255, 255, 255, 0.08);
+            box-shadow: 0 0 20px rgba(0,0,0,0.3);
           }
-          .status-msg {
-            margin-top: 18px;
+          .player-panel { display: none; text-align: left; }
+          .player-panel.active { display: block; }
+          .info-box {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border);
+            padding: 12px 14px;
+            border-radius: 12px;
+            margin-bottom: 18px;
             font-size: 13px;
-            color: var(--text-dim);
-            min-height: 20px;
-          }
-          .privacy {
-            margin-top: 20px;
-            font-size: 12px;
             color: var(--text-dim);
             line-height: 1.5;
           }
+          .info-box strong { color: var(--text-main); word-break: break-all; }
+          .form-group { margin-bottom: 16px; }
+          label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: var(--text-dim);
+          }
+          input {
+            width: 100%;
+            padding: 12px 14px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: white;
+            font-family: inherit;
+            font-size: 14px;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+          }
+          input:focus { outline: none; border-color: var(--accent); }
+          .btn { 
+            width: 100%;
+            background: var(--accent); 
+            color: #000; 
+            padding: 14px; 
+            border-radius: 100px; 
+            border: none;
+            font-family: inherit;
+            font-weight: 700; 
+            font-size: 15px;
+            cursor: pointer;
+            transition: all 0.25s;
+            margin-top: 6px;
+          }
+          .btn.youtube-btn { color: #fff; }
+          .btn:hover { filter: brightness(1.08); transform: translateY(-2px); }
+          .setup-guide {
+            margin-top: 18px;
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 14px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+          }
+          .setup-guide summary {
+            padding: 12px 14px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            color: var(--text-dim);
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+          }
+          .setup-guide summary::before { content: '→'; transition: transform 0.2s; }
+          .setup-guide[open] summary::before { transform: rotate(90deg); }
+          .setup-content {
+            padding: 0 14px 14px 14px;
+            font-size: 12.5px;
+            color: var(--text-dim);
+            line-height: 1.6;
+          }
+          .setup-content ol { padding-left: 18px; margin: 8px 0 0 0; }
+          .setup-content li { margin-bottom: 6px; }
+          .setup-content code {
+            background: #000;
+            padding: 2px 6px;
+            border-radius: 4px;
+            border: 1px solid #333;
+            color: #fff;
+            word-break: break-all;
+          }
+          .status-msg {
+            margin-top: 16px;
+            font-size: 13px;
+            color: var(--text-dim);
+            text-align: center;
+            min-height: 18px;
+          }
+          .privacy {
+            margin-top: 16px;
+            font-size: 12px;
+            color: var(--text-dim);
+            line-height: 1.5;
+            text-align: center;
+          }
           footer {
-            margin-top: 32px;
+            margin-top: 28px;
             font-size: 14px;
             color: var(--text-dim);
           }
         </style>
       </head>
       <body>
-        <div class="background-glow"></div>
+        <div class="background-glow" id="bgGlow"></div>
         <div class="container">
           <h1>Now Playing</h1>
-          <p>Connect your music player in one click to generate a live SVG widget for your GitHub profile.</p>
+          <p>Connect your own Spotify or YouTube Music app via OAuth to generate a live SVG widget for your GitHub profile.</p>
 
-          <div class="players">
-            <button
-              type="button"
-              class="connect-btn spotify"
-              onclick="connectProvider('spotify')"
-              ${spotifyReady ? '' : 'disabled'}
-            >
-              <span class="player-left">
-                <svg class="player-icon" viewBox="0 0 24 24" fill="#1DB954" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M12 0C5.372 0 0 5.372 0 12s5.372 12 12 12 12-5.372 12-12S18.628 0 12 0zm5.508 17.303c-.216.354-.675.466-1.03.25-2.853-1.743-6.444-2.138-10.673-1.172-.406.092-.813-.16-.904-.565-.092-.406.161-.813.566-.905 4.633-1.06 8.583-.615 11.79 1.344.355.216.467.675.251 1.03zm1.48-3.26c-.272.443-.848.583-1.291.31-3.262-2.004-8.23-2.585-12.086-1.414-.498.151-1.025-.13-1.176-.628-.151-.498.13-1.025.628-1.176 4.417-1.34 9.878-.68 13.616 1.616.442.272.583.848.31 1.291zm.128-3.4c-3.912-2.323-10.363-2.537-14.126-1.396-.6.182-1.234-.162-1.416-.763-.182-.6.162-1.233.763-1.415 4.316-1.31 11.439-1.062 15.968 1.625.539.319.718 1.018.399 1.556-.32.538-1.019.718-1.557.399z"/>
-                </svg>
-                <span>
-                  <span class="player-title">Spotify</span>
-                  <span class="player-sub">${spotifyReady ? 'Live playback & recent history' : 'Not configured on server'}</span>
-                </span>
-              </span>
-              <span class="connect-pill">Connect</span>
+          <div class="player-tabs">
+            <button type="button" class="player-tab active" data-provider="spotify" data-color="#1DB954">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="#1DB954"><path d="M12 0C5.372 0 0 5.372 0 12s5.372 12 12 12 12-5.372 12-12S18.628 0 12 0zm5.508 17.303c-.216.354-.675.466-1.03.25-2.853-1.743-6.444-2.138-10.673-1.172-.406.092-.813-.16-.904-.565-.092-.406.161-.813.566-.905 4.633-1.06 8.583-.615 11.79 1.344.355.216.467.675.251 1.03zm1.48-3.26c-.272.443-.848.583-1.291.31-3.262-2.004-8.23-2.585-12.086-1.414-.498.151-1.025-.13-1.176-.628-.151-.498.13-1.025.628-1.176 4.417-1.34 9.878-.68 13.616 1.616.442.272.583.848.31 1.291zm.128-3.4c-3.912-2.323-10.363-2.537-14.126-1.396-.6.182-1.234-.162-1.416-.763-.182-.6.162-1.233.763-1.415 4.316-1.31 11.439-1.062 15.968 1.625.539.319.718 1.018.399 1.556-.32.538-1.019.718-1.557.399z"/></svg>
+              <span>Spotify</span>
             </button>
+            <button type="button" class="player-tab" data-provider="youtube" data-color="#FF0033">
+              <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="12" fill="#FF0033"/><circle cx="12" cy="12" r="7.5" fill="none" stroke="#fff" stroke-width="1.4"/><polygon points="10,8.5 16,12 10,15.5" fill="#fff"/></svg>
+              <span>YouTube Music</span>
+            </button>
+          </div>
 
-            <button
-              type="button"
-              class="connect-btn youtube"
-              onclick="connectProvider('youtube')"
-              ${youtubeReady ? '' : 'disabled'}
-            >
-              <span class="player-left">
-                <svg class="player-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <circle cx="12" cy="12" r="12" fill="#FF0033"/>
-                  <circle cx="12" cy="12" r="7.5" fill="none" stroke="#FFFFFF" stroke-width="1.3"/>
-                  <polygon points="10,8.5 16,12 10,15.5" fill="#FFFFFF"/>
-                </svg>
-                <span>
-                  <span class="player-title">YouTube Music</span>
-                  <span class="player-sub">${youtubeReady ? 'Google OAuth • Recent & liked tracks' : 'Not configured on server'}</span>
-                </span>
-              </span>
-              <span class="connect-pill">Connect</span>
-            </button>
+          <!-- SPOTIFY -->
+          <div class="player-panel active" id="panel-spotify">
+            <div class="info-box">
+              Add <strong>${redirectUri}</strong> as a Redirect URI in your Spotify App.
+            </div>
+            <form action="/auth/spotify" method="POST" onsubmit="return handleOAuthSubmit(event, 'spotify')">
+              <input type="hidden" name="popup" value="1">
+              <div class="form-group">
+                <label for="sp-clientId">Spotify Client ID ${spotifyHasServer ? '(Optional — leave blank to use default)' : ''}</label>
+                <input type="text" id="sp-clientId" name="clientId" placeholder="Enter your Spotify Client ID" ${spotifyHasServer ? '' : 'required'}>
+              </div>
+              <div class="form-group">
+                <label for="sp-clientSecret">Spotify Client Secret ${spotifyHasServer ? '(Optional)' : ''}</label>
+                <input type="password" id="sp-clientSecret" name="clientSecret" placeholder="Enter your Spotify Client Secret" ${spotifyHasServer ? '' : 'required'}>
+              </div>
+              <button type="submit" class="btn">Connect Spotify</button>
+            </form>
+            <details class="setup-guide">
+              <summary>How to create your Spotify App</summary>
+              <div class="setup-content">
+                <ol>
+                  <li>Open the <a href="https://developer.spotify.com/dashboard" target="_blank" style="color:#1DB954;">Spotify Developer Dashboard</a> and click <strong>Create app</strong>.</li>
+                  <li>Add Redirect URI: <code>${redirectUri}</code> and save.</li>
+                  <li>Copy your <strong>Client ID</strong> and <strong>Client Secret</strong> above and click <strong>Connect Spotify</strong>.</li>
+                </ol>
+              </div>
+            </details>
+          </div>
+
+          <!-- YOUTUBE MUSIC -->
+          <div class="player-panel" id="panel-youtube">
+            <div class="info-box">
+              Add <strong>${redirectUri}</strong> as an Authorized Redirect URI in your Google Cloud OAuth Client.
+            </div>
+            <form action="/auth/youtube" method="POST" onsubmit="return handleOAuthSubmit(event, 'youtube')">
+              <input type="hidden" name="popup" value="1">
+              <div class="form-group">
+                <label for="yt-clientId">Google OAuth Client ID ${youtubeHasServer ? '(Optional — leave blank to use default)' : ''}</label>
+                <input type="text" id="yt-clientId" name="clientId" placeholder="xxxx.apps.googleusercontent.com" ${youtubeHasServer ? '' : 'required'}>
+              </div>
+              <div class="form-group">
+                <label for="yt-clientSecret">Google OAuth Client Secret ${youtubeHasServer ? '(Optional)' : ''}</label>
+                <input type="password" id="yt-clientSecret" name="clientSecret" placeholder="GOCSPX-..." ${youtubeHasServer ? '' : 'required'}>
+              </div>
+              <button type="submit" class="btn youtube-btn">Connect YouTube Music</button>
+            </form>
+            <details class="setup-guide">
+              <summary>How to create your Google / YouTube OAuth App</summary>
+              <div class="setup-content">
+                <ol>
+                  <li>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:#FF0033;">Google Cloud Console</a> and enable <strong>YouTube Data API v3</strong>.</li>
+                  <li>Under <strong>OAuth consent screen</strong>, add your Gmail as a Test User.</li>
+                  <li>Create an <strong>OAuth client ID (Web application)</strong> with Redirect URI: <code>${redirectUri}</code>.</li>
+                  <li>Copy your <strong>Client ID</strong> and <strong>Client Secret</strong> above and click <strong>Connect YouTube Music</strong>.</li>
+                </ol>
+              </div>
+            </details>
           </div>
 
           <div class="status-msg" id="statusMsg"></div>
 
           <div class="privacy">
-            🔒 Your OAuth tokens are used only to fetch your music activity. You can revoke access and delete your data anytime from the dashboard.
+            🔒 Your credentials and tokens are stored securely and used only to fetch your music activity. You can revoke access anytime from your dashboard.
           </div>
         </div>
 
@@ -257,34 +342,59 @@ app.get('/', (req, res) => {
         </footer>
 
         <script>
-          function connectProvider(provider) {
-            const status = document.getElementById('statusMsg');
-            status.textContent = 'Opening ' + (provider === 'spotify' ? 'Spotify' : 'YouTube Music') + ' login...';
+          const tabs = document.querySelectorAll('.player-tab');
+          const panels = document.querySelectorAll('.player-panel');
+          const glow = document.getElementById('bgGlow');
 
+          tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+              const provider = tab.dataset.provider;
+              const color = tab.dataset.color;
+              tabs.forEach(t => t.classList.remove('active'));
+              panels.forEach(p => p.classList.remove('active'));
+              tab.classList.add('active');
+              document.getElementById('panel-' + provider).classList.add('active');
+              document.documentElement.style.setProperty('--accent', color);
+              glow.style.background = 'radial-gradient(circle, ' + color + '26 0%, rgba(0, 0, 0, 0) 70%)';
+            });
+          });
+
+          function handleOAuthSubmit(event, provider) {
+            const form = event.target;
+            const status = document.getElementById('statusMsg');
+            const popupName = 'oauth_' + provider;
             const w = 520;
             const h = 680;
             const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
             const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
+
             const popup = window.open(
-              '/auth/' + provider + '?popup=1',
-              'oauth_' + provider,
+              '',
+              popupName,
               'width=' + w + ',height=' + h + ',left=' + left + ',top=' + top + ',resizable=yes,scrollbars=yes'
             );
 
-            // Fallback to full-page redirect if popup was blocked
             if (!popup || popup.closed || typeof popup.closed === 'undefined') {
-              window.location.href = '/auth/' + provider;
-              return;
+              // Popup blocked — fall back to full-page redirect
+              form.target = '_self';
+              form.querySelector('input[name="popup"]').value = '0';
+              return true;
             }
+
+            form.target = popupName;
+            form.querySelector('input[name="popup"]').value = '1';
+            status.textContent = 'Complete authorization in the ' + (provider === 'spotify' ? 'Spotify' : 'YouTube Music') + ' popup...';
 
             const pollClosed = setInterval(() => {
               if (popup.closed) {
                 clearInterval(pollClosed);
-                if (status.textContent.startsWith('Opening')) {
+                if (status.textContent.startsWith('Complete')) {
                   status.textContent = '';
                 }
               }
             }, 500);
+
+            return true;
           }
 
           window.addEventListener('message', (event) => {
@@ -300,22 +410,32 @@ app.get('/', (req, res) => {
   `);
 });
 
-app.get('/auth/:provider', (req, res) => {
+const startOAuthFlow = (req: express.Request, res: express.Response) => {
   const { provider } = req.params;
   if (!isValidProvider(provider)) {
     return res.status(400).send('Unsupported provider');
   }
 
-  if (!isProviderConfigured(provider)) {
-    const envHint =
-      provider === 'spotify'
-        ? 'SPOTIFY_CLIENT_ID and SPOTIFY_SECRET_ID'
-        : 'YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET';
-    return res.status(500).send(`${PROVIDERS[provider].name} OAuth is not configured. Set ${envHint} in .env.`);
+  const bodyClientId = typeof req.body?.clientId === 'string' ? req.body.clientId.trim() : '';
+  const bodyClientSecret = typeof req.body?.clientSecret === 'string' ? req.body.clientSecret.trim() : '';
+
+  const clientId =
+    bodyClientId ||
+    (provider === 'spotify'
+      ? process.env.SPOTIFY_CLIENT_ID || ''
+      : process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '');
+  const clientSecret =
+    bodyClientSecret ||
+    (provider === 'spotify'
+      ? process.env.SPOTIFY_SECRET_ID || ''
+      : process.env.YOUTUBE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '');
+
+  if (!clientId || !clientSecret) {
+    return res.status(400).send(`${PROVIDERS[provider].name} Client ID and Client Secret are required.`);
   }
 
   const state = crypto.randomBytes(16).toString('hex');
-  const isPopup = req.query.popup === '1';
+  const isPopup = req.query.popup === '1' || req.body?.popup === '1';
   const cookieOptions = {
     maxAge: 15 * 60 * 1000,
     httpOnly: true,
@@ -327,19 +447,35 @@ app.get('/auth/:provider', (req, res) => {
   res.cookie('oauth_state', state, cookieOptions);
   res.cookie('temp_provider', provider, cookieOptions);
   res.cookie('oauth_popup', isPopup ? '1' : '0', cookieOptions);
+  if (bodyClientId && bodyClientSecret) {
+    res.cookie('temp_client_id', bodyClientId, cookieOptions);
+    res.cookie('temp_client_secret', bodyClientSecret, cookieOptions);
+  } else {
+    res.clearCookie('temp_client_id');
+    res.clearCookie('temp_client_secret');
+  }
 
   const redirectUri = getRedirectUri(req);
   const authUrl =
     provider === 'spotify'
-      ? getSpotifyAuthUrl(state, redirectUri)
-      : getYouTubeAuthUrl(state, redirectUri);
+      ? getSpotifyAuthUrl(state, redirectUri, clientId)
+      : getYouTubeAuthUrl(state, redirectUri, clientId);
 
   res.redirect(authUrl);
-});
+};
+
+app.get('/auth/:provider', startOAuthFlow);
+app.post('/auth/:provider', startOAuthFlow);
 
 app.get('/callback', async (req, res) => {
   const { code, state, error: oauthError } = req.query;
-  const { oauth_state, temp_provider, oauth_popup } = req.signedCookies;
+  const {
+    oauth_state,
+    temp_provider,
+    oauth_popup,
+    temp_client_id: userClientId,
+    temp_client_secret: userClientSecret,
+  } = req.signedCookies;
 
   if (oauthError) {
     return res.status(400).send(`Authorization denied: ${oauthError}`);
@@ -355,6 +491,8 @@ app.get('/callback', async (req, res) => {
   res.clearCookie('oauth_state');
   res.clearCookie('temp_provider');
   res.clearCookie('oauth_popup');
+  res.clearCookie('temp_client_id');
+  res.clearCookie('temp_client_secret');
 
   try {
     const redirectUri = getRedirectUri(req);
@@ -365,7 +503,7 @@ app.get('/callback', async (req, res) => {
     let expiresAt = 0;
 
     if (provider === 'youtube') {
-      const tokens = await getYouTubeTokens(code as string, redirectUri);
+      const tokens = await getYouTubeTokens(code as string, redirectUri, userClientId, userClientSecret);
       const profile = await getYouTubeProfile(tokens.access_token);
       providerUserId = profile.id;
       displayName = profile.displayName;
@@ -373,7 +511,7 @@ app.get('/callback', async (req, res) => {
       refreshToken = tokens.refresh_token || '';
       expiresAt = Date.now() + (tokens.expires_in || 3600) * 1000;
     } else {
-      const tokens = await getSpotifyTokens(code as string, redirectUri);
+      const tokens = await getSpotifyTokens(code as string, redirectUri, userClientId, userClientSecret);
       const profile = await getSpotifyProfile(tokens.access_token);
       providerUserId = profile.id;
       displayName = profile.display_name || profile.id;
@@ -393,6 +531,7 @@ app.get('/callback', async (req, res) => {
       accessToken,
       refreshToken: refreshToken || existingUser?.refreshToken || '',
       expiresAt,
+      ...(userClientId && userClientSecret ? { clientId: userClientId, clientSecret: userClientSecret } : {}),
     };
 
     await saveUser(uid, userData);
@@ -663,11 +802,11 @@ app.get('/dashboard', async (req, res) => {
           <div class="card">
             <h2>Manage Access</h2>
             <p style="font-size: 14px; color: var(--text-dim); margin-bottom: 20px;">
-              Your OAuth tokens are stored securely only to fetch your music activity. 
-              Revoking access will permanently delete your tokens from our records.
+              Your OAuth credentials and tokens are stored securely only to fetch your music activity. 
+              Revoking access will permanently delete your data from our records.
             </p>
             <div class="management-actions">
-              <form action="/revoke" method="POST" onsubmit="return confirm('Are you sure you want to revoke access? This will permanently delete your stored tokens and you will need to reconnect.')">
+              <form action="/revoke" method="POST" onsubmit="return confirm('Are you sure you want to revoke access? This will permanently delete your stored credentials and you will need to reconnect.')">
                 <button type="submit" class="btn-small btn-danger">Revoke Access & Delete Data</button>
               </form>
             </div>
